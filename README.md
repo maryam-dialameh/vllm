@@ -71,9 +71,10 @@ if torch.cuda.is_current_stream_capturing():
 ## 3) Post-processing: .bin → moe_routes.jsonl after inference completes
 
 ## 4) How to run
-install vllm: cd into vllm dir and then: pip install -e .
-run: make the data by python make_prompt.py and then adjust your environment variables e.g. saving path, and then python main.py, then check the ./logs
-Then, run python plot_hist.py for the figures and some statististics.
+- install vllm: cd into vllm dir and then: pip install -e .
+- Please install some extra dependecies like pip install datasets
+- run: make the data by python make_prompt.py and then adjust your environment variables e.g. - saving path, and then python main.py, then check the ./logs
+- Then, run python plot_hist.py for the figures and some statististics.
 
 ## 5) Results note:
 - Top-3 routed experts at layer=5 (by selection probability): expert 52 (2.52%), expert 32 (2.45%), expert 51 (2.18%).
