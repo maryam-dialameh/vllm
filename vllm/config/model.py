@@ -101,7 +101,12 @@ AttnTypeStr = Literal[
 @dataclass(config=ConfigDict(arbitrary_types_allowed=True))
 class ModelConfig:
     """Configuration for the model."""
+    ## ====== MoE-logger modifications - Start
+    """Index of the target MoE layer to log top-k experts from."""
+    target_layer_idx: int = 0
 
+    record_topk: bool = False
+    ## ====== MoE-logger modifications - End
     model: str = "Qwen/Qwen3-0.6B"
     """Name or path of the Hugging Face model to use. It is also used as the
     content for `model_name` tag in metrics output when `served_model_name` is

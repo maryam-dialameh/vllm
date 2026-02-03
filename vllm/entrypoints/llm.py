@@ -3,9 +3,11 @@
 
 import itertools
 import warnings
+import os
+import numpy as np
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, TypeAlias, cast
-
+from read_bin import bin_to_jsonl
 import cloudpickle
 import torch.nn as nn
 from pydantic import ValidationError
@@ -26,6 +28,7 @@ from vllm.config import (
     StructuredOutputsConfig,
     is_init_field,
 )
+import vllm.envs as envs
 from vllm.config.compilation import CompilationMode
 from vllm.config.model import (
     ConvertOption,
@@ -226,10 +229,13 @@ class LLM:
         kv_cache_memory_bytes: int | None = None,
         compilation_config: int | dict[str, Any] | CompilationConfig | None = None,
         logits_processors: list[str | type[LogitsProcessor]] | None = None,
+        target_layer_idx: int | None = None,
+        record_topk: bool = False,
         **kwargs: Any,
     ) -> None:
         """LLM constructor."""
-
+        self.model = model ### added args for logging topk --- IGNORE ---
+        self.seed = seed
         if "disable_log_stats" not in kwargs:
             kwargs["disable_log_stats"] = True
 
@@ -300,6 +306,13 @@ class LLM:
                 "'examples/offline_inference/data_parallel.py'."
             )
 
+        ## added args for logging topk --- IGNORE ---
+        if record_topk or target_layer_idx is not None:
+            self.target_layer_idx = target_layer_idx
+            additional_cfg = dict(kwargs.get("additional_config") or {})
+            additional_cfg["record_topk"] = bool(record_topk)
+            additional_cfg["target_layer_idx"] = target_layer_idx
+            kwargs["additional_config"] = additional_cfg
         engine_args = EngineArgs(
             model=model,
             runner=runner,
@@ -433,6 +446,18 @@ class LLM:
         )
 
         outputs = self._run_engine(use_tqdm=use_tqdm)
+        if envs.VLLM_LOG_MOE !="":
+            bin_to_jsonl(
+                bin_path=os.path.join(envs.VLLM_LOG_MOE, "layer_topK_info.bin"),
+                jsonl_path=os.path.join(envs.VLLM_LOG_MOE, "moe_routes.jsonl"),
+                model_id=self.model,
+                layer_idx=self.target_layer_idx,
+                ids_dtype=np.int32,
+                wts_dtype=np.float16,
+                req_id="r1",
+                seed=self.seed,
+                record_stride=1,  # set 10/100 if you want fewer lines
+            )
         return self.engine_class.validate_outputs(outputs, RequestOutput)
 
     def _get_modality_specific_lora_reqs(

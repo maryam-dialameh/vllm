@@ -254,6 +254,7 @@ if TYPE_CHECKING:
     VLLM_DEBUG_MFU_METRICS: bool = False
     VLLM_DISABLE_LOG_LOGO: bool = False
     VLLM_LORA_DISABLE_PDL: bool = False
+    VLLM_LOG_MOE: str = ""
 
 
 def get_default_cache_root():
@@ -1596,6 +1597,9 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_DISABLE_SHARED_EXPERTS_STREAM": lambda: bool(
         int(os.getenv("VLLM_DISABLE_SHARED_EXPERTS_STREAM", "0"))
     ),
+    # Extra code (saving log path) for logging MoE related information
+    "VLLM_LOG_MOE": lambda: os.getenv("VLLM_LOG_MOE", ""),
+
     # Limits when we run shared_experts in a separate stream.
     # We found out that for large batch sizes, the separate stream
     # execution is not beneficial (most likely because of the input clone)

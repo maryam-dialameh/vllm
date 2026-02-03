@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-
+import os
 from collections.abc import Callable, Generator, Iterable
 from contextlib import contextmanager, nullcontext
 from enum import Enum
 from typing import Literal, cast, get_args, overload
+import json
 
 import torch
 import torch.nn.functional as F
@@ -63,6 +64,102 @@ from vllm.utils.torch_utils import (
 from vllm.v1.worker.ubatching import dbo_current_ubatch_id
 
 logger = init_logger(__name__)
+##### NEW logging codes
+import threading, queue, time
+from dataclasses import dataclass
+
+@dataclass
+class _LogItem:
+    event: "torch.cuda.Event"
+    ids_cpu: torch.Tensor
+    wts_cpu: torch.Tensor
+    meta: dict
+
+
+class AsyncTopKLogger:
+    def __init__(self, path: str, max_queue: int = 256, sample_every: int = 1):
+        self.path = path
+        self.sample_every = sample_every
+        self.q: "queue.Queue[_LogItem]" = queue.Queue(maxsize=max_queue)
+        self._step = 0
+        self._stop = False
+
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+
+        self._thr = threading.Thread(target=self._worker, daemon=True)
+        self._thr.start()
+
+    def close(self):
+        self._stop = True
+        try:
+            self._thr.join(timeout=2.0)
+        except Exception:
+            pass
+
+    def _worker(self):
+        with open(self.path, "ab", buffering=0) as f:
+            while not self._stop:
+                try:
+                    item = self.q.get(timeout=0.05)
+                except queue.Empty:
+                    continue
+                try:
+                    item.event.synchronize()
+
+                    # Write JSON meta (NOT str(dict)) to avoid eval issues
+                    meta_line = (json.dumps(item.meta, separators=(",", ":")) + "\n").encode("utf-8")
+
+                    # Build one blob -> one write (reduces partial/interleaved writes)
+                    blob = (
+                        meta_line
+                        + item.ids_cpu.numpy().tobytes(order="C")
+                        + item.wts_cpu.numpy().tobytes(order="C")
+                        + b"\n"
+                    )
+                    f.write(blob)
+                except Exception:
+                    pass
+                finally:
+                    self.q.task_done()
+
+    def record(self, topk_ids: torch.Tensor, topk_weights: torch.Tensor, meta: dict):
+        self._step += 1
+        if self.sample_every > 1 and (self._step % self.sample_every) != 0:
+            return
+        if torch.cuda.is_current_stream_capturing():
+            return
+
+        # ---- FORCE STABLE DTYPES ----
+        if topk_ids.dtype != torch.int32:
+            topk_ids = topk_ids.to(torch.int32)
+        if topk_weights.dtype != torch.float16:
+            topk_weights = topk_weights.to(torch.float16)
+
+        # Ensure contiguous so bytes match reshape expectations
+        topk_ids = topk_ids.contiguous()
+        topk_weights = topk_weights.contiguous()
+
+        # Allocate pinned CPU with explicit dtype
+        ids_cpu = torch.empty(topk_ids.shape, dtype=torch.int32, device="cpu", pin_memory=True)
+        wts_cpu = torch.empty(topk_weights.shape, dtype=torch.float16, device="cpu", pin_memory=True)
+
+        ids_cpu.copy_(topk_ids, non_blocking=True)
+        wts_cpu.copy_(topk_weights, non_blocking=True)
+
+        ev = torch.cuda.Event(enable_timing=False)
+        ev.record(torch.cuda.current_stream())
+
+        # store dtypes in meta so reader can verify
+        meta = dict(meta)
+        meta["ids_dtype"] = "int32"
+        meta["wts_dtype"] = "float16"
+
+        try:
+            self.q.put_nowait(_LogItem(event=ev, ids_cpu=ids_cpu, wts_cpu=wts_cpu, meta=meta))
+        except queue.Full:
+            pass
+
+##### End of new logging code
 
 
 class FusedMoeWeightScaleSupported(Enum):
@@ -361,6 +458,7 @@ class FusedMoE(CustomOp):
 
         vllm_config = get_current_vllm_config()
         self.vllm_config = vllm_config
+        
 
         # FIXME (varun): We should have a better way of inferring the activation
         # datatype. This works for now as the tensor datatype entering the MoE
@@ -542,6 +640,7 @@ class FusedMoE(CustomOp):
             # can make this a value.
             indices_type_getter=lambda: self.quant_method.topk_indices_dtype,
         )
+        # import pdb; pdb.set_trace()
         self.routing_method_type: RoutingMethodType = self.router.routing_method_type
 
         self.moe_config: FusedMoEConfig = FusedMoEConfig(
@@ -628,6 +727,31 @@ class FusedMoE(CustomOp):
         self.batched_hidden_states: torch.Tensor | None = None
         self.batched_router_logits: torch.Tensor | None = None
 
+        ## Extra code | new code
+        self._topk_logger = None
+        self.additional_config = vllm_config.additional_config
+        self.record_topk = bool(self.vllm_config.additional_config.get("record_topk", False))
+        self.target_layer_idx = self.vllm_config.additional_config.get("target_layer_idx", 0)
+        # self.saving_log_path = self.vllm_config.additional_config.get("saving_log_path", None)
+
+        if envs.VLLM_LOG_MOE != ""  and self.layer_id==self.target_layer_idx:
+            # if self.saving_log_path is None:
+            #     self.saving_log_path = f"./logs"
+            # self.saving_log_path += f"layer_{self.layer_id}_dp_{self.dp_rank}_ep_{self.ep_rank}.bin"
+            # build the file path
+            self.saving_log_path = os.path.join(
+                envs.VLLM_LOG_MOE,
+                f"layer_topK_info.bin",
+            )
+
+            # make sure the directory exists (parent folder)
+            os.makedirs(os.path.dirname(self.saving_log_path), exist_ok=True)
+            # if envs.VLLM_LOGGING_LEVEL == "DEBUG" and getattr(envs, "VLLM_MOE_LOG_TOPK", False):
+            self._topk_logger = AsyncTopKLogger(
+                path=self.saving_log_path,
+                max_queue=256,
+                sample_every=1,  # log 1 out of 10 calls
+            )
     # Note: maybe_init_modular_kernel should only be called by
     # prepare_communication_buffer_for_model.
     # This is called after all weight loading and post-processing, so it
@@ -1929,6 +2053,19 @@ class FusedMoE(CustomOp):
                     topk_weights=topk_weights,
                     topk_ids=topk_ids,
                 )
+                if self._topk_logger is not None:
+                    self._topk_logger.record(
+                        topk_ids=topk_ids,
+                        topk_weights=topk_weights,
+                        meta={
+                            "layer": self.layer_name,
+                            "num_tokens": int(topk_ids.shape[0]),
+                            "top_k": int(topk_ids.shape[1]) if topk_ids.ndim > 1 else -1,
+                            "dp_rank": int(self.dp_rank),
+                            "tp_rank": int(self.tp_rank),
+                            "ep_rank": int(self.ep_rank),
+                        },
+                    )
 
             if has_separate_shared_experts:
                 assert self.shared_experts is not None
