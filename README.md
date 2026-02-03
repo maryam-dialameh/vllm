@@ -7,97 +7,91 @@
 </p>
 
 <h3 align="center">
-Easy, fast, and cheap LLM serving for everyone
+MoE Top-K Routing Logger for vLLM (Minimal-Overhead)
 </h3>
 
-<p align="center">
-| <a href="https://docs.vllm.ai"><b>Documentation</b></a> | <a href="https://blog.vllm.ai/"><b>Blog</b></a> | <a href="https://arxiv.org/abs/2309.06180"><b>Paper</b></a> | <a href="https://x.com/vllm_project"><b>Twitter/X</b></a> | <a href="https://discuss.vllm.ai"><b>User Forum</b></a> | <a href="https://slack.vllm.ai"><b>Developer Slack</b></a> |
-</p>
+## What this repo contains
 
-🔥 We have built a vllm website to help you get started with vllm. Please visit [vllm.ai](https://vllm.ai) to learn more.
-For events, please visit [vllm.ai/events](https://vllm.ai/events) to join us.
+A small patch/fork of vLLM that logs MoE router **top-k expert IDs + weights** for a **target MoE layer** with a runtime flag.
+
+Artifacts from one run:
+
+- `moe_routes.jsonl` (routing log)
+- `expert_hist.png` (raw expert selection histogram)
+- `expert_norm.png` (normalized routing distribution)
+- `timing.json` (wall times with/without logging)
+- plot script (builds hist + normalized plot + entropy)
 
 ---
 
-## About
+## 1) Where we hooked in vLLM
 
-vLLM is a fast and easy-to-use library for LLM inference and serving.
+**Hook point:** `vllm/model_executor/layers/fused_moe/layer.py`, inside class `FusedMoE(CustomOp)`.
 
-Originally developed in the [Sky Computing Lab](https://sky.cs.berkeley.edu) at UC Berkeley, vLLM has evolved into a community-driven project with contributions from both academia and industry.
+**Data source:** in `FusedMoE.forward_impl(...)`, when router produces:
 
-vLLM is fast with:
+```python
+topk_weights, topk_ids = self.router.select_experts(...)
+```
+Gating logic: we read vllm_config.additional_config and only log when:
+```
+record_topk=True
+layer_id == target_layer_idx
+```
+This lets you turn logging on/off without changing model code paths, and avoids logging all layers.
 
-- State-of-the-art serving throughput
-- Efficient management of attention key and value memory with [**PagedAttention**](https://blog.vllm.ai/2023/06/20/vllm.html)
-- Continuous batching of incoming requests
-- Fast model execution with CUDA/HIP graph
-- Quantizations: [GPTQ](https://arxiv.org/abs/2210.17323), [AWQ](https://arxiv.org/abs/2306.00978), [AutoRound](https://arxiv.org/abs/2309.05516), INT4, INT8, and FP8
-- Optimized CUDA kernels, including integration with FlashAttention and FlashInfer
-- Speculative decoding
-- Chunked prefill
-
-vLLM is flexible and easy to use with:
-
-- Seamless integration with popular Hugging Face models
-- High-throughput serving with various decoding algorithms, including *parallel sampling*, *beam search*, and more
-- Tensor, pipeline, data and expert parallelism support for distributed inference
-- Streaming outputs
-- OpenAI-compatible API server
-- Support for NVIDIA GPUs, AMD CPUs and GPUs, Intel CPUs and GPUs, PowerPC CPUs, Arm CPUs, and TPU. Additionally, support for diverse hardware plugins such as Intel Gaudi, IBM Spyre and Huawei Ascend.
-- Prefix caching support
-- Multi-LoRA support
-
-vLLM seamlessly supports most popular open-source models on HuggingFace, including:
-
-- Transformer-like LLMs (e.g., Llama)
-- Mixture-of-Expert LLMs (e.g., Mixtral, Deepseek-V2 and V3)
-- Embedding Models (e.g., E5-Mistral)
-- Multi-modal LLMs (e.g., LLaVA)
-
-Find the full list of supported models [here](https://docs.vllm.ai/en/latest/models/supported_models.html).
-
-## Getting Started
-
-Install vLLM with `pip` or [from source](https://docs.vllm.ai/en/latest/getting_started/installation/gpu/index.html#build-wheel-from-source):
-
-```bash
-pip install vllm
+## 2) The “trick”: asynchronous .bin logging with minimal latency overhead
+We implemented an AsyncTopKLogger with Non-blocking D2H copies to pinned CPU memory:
+```python
+ids_cpu.copy_(topk_ids, non_blocking=True)
+wts_cpu.copy_(topk_weights, non_blocking=True)
 ```
 
-Visit our [documentation](https://docs.vllm.ai/en/latest/) to learn more.
-
-- [Installation](https://docs.vllm.ai/en/latest/getting_started/installation.html)
-- [Quickstart](https://docs.vllm.ai/en/latest/getting_started/quickstart.html)
-- [List of Supported Models](https://docs.vllm.ai/en/latest/models/supported_models.html)
-
-## Contributing
-
-We welcome and value any contributions and collaborations.
-Please check out [Contributing to vLLM](https://docs.vllm.ai/en/latest/contributing/index.html) for how to get involved.
-
-## Citation
-
-If you use vLLM for your research, please cite our [paper](https://arxiv.org/abs/2309.06180):
-
-```bibtex
-@inproceedings{kwon2023efficient,
-  title={Efficient Memory Management for Large Language Model Serving with PagedAttention},
-  author={Woosuk Kwon and Zhuohan Li and Siyuan Zhuang and Ying Sheng and Lianmin Zheng and Cody Hao Yu and Joseph E. Gonzalez and Hao Zhang and Ion Stoica},
-  booktitle={Proceedings of the ACM SIGOPS 29th Symposium on Operating Systems Principles},
-  year={2023}
-}
+A CUDA event recorded on the current stream so we can wait later:
+```python
+ev.record(torch.cuda.current_stream())
 ```
 
-## Contact Us
+A background thread that:
+```python
+waits on event.synchronize() (off the critical path),
+```
+appends a compact record to a .bin file.
 
-<!-- --8<-- [start:contact-us] -->
-- For technical questions and feature requests, please use GitHub [Issues](https://github.com/vllm-project/vllm/issues)
-- For discussing with fellow users, please use the [vLLM Forum](https://discuss.vllm.ai)
-- For coordinating contributions and development, please use [Slack](https://slack.vllm.ai)
-- For security disclosures, please use GitHub's [Security Advisories](https://github.com/vllm-project/vllm/security/advisories) feature
-- For collaborations and partnerships, please contact us at [collaboration@vllm.ai](mailto:collaboration@vllm.ai)
-<!-- --8<-- [end:contact-us] -->
+Key idea: the forward pass does no blocking sync and no JSON work. It only enqueues a copy + pushes a small object into a bounded queue.
+If the queue is full, we drop records instead of slowing inference.
 
-## Media Kit
+File format choice: We write a simple binary append format. This avoids expensive JSON serialization during inference.
 
-- If you wish to use vLLM's logo, please refer to [our media kit repo](https://github.com/vllm-project/media-kit)
+CUDA graph safety: We also skip logging when capture is active:
+```python
+if torch.cuda.is_current_stream_capturing():
+    return
+```
+## 3) Post-processing: .bin → moe_routes.jsonl after inference completes
+
+## 4) How to run
+install vllm: cd into vllm dir and then: pip install -e .
+run: make the data by python make_prompt.py and then adjust your environment variables e.g. saving path, and then python main.py, then check the ./logs
+Then, run python plot_hist.py for the figures and some statististics.
+
+## 5) Results note:
+- Top-3 experts (by selection probability): expert 11 (2.598%), expert 54 (2.532%), expert 22 (2.393%).
+- Normalized distribution: routing is nearly uniform across 60 active experts (support=60).
+- Entropy metric: entropy = 5.8929 bits, normalized entropy = 0.9976 (≈ 1.0 is uniform over support).
+- Interpretation: the router spreads traffic almost evenly across experts, indicating strong load balancing (little expert collapse).
+- Timing: logging run A=3.97s vs no-log B=2.06s → overhead ≈ 1.91s in this setting.
+
+6) AI usage log (how outputs were verified)
+
+Used ChatGPT to:
+
+- design the minimal-overhead logging approach (CUDA event + pinned memory + background thread),
+- propose robust file/path handling (create parent dir, avoid treating file path as directory),
+- provide analysis scripts (histogram, normalized distribution, entropy).
+
+Verification steps:
+- sanity-checked that Total selections ≈ route_records × top_k (here: 505,811 × 4 = 2,023,244 matches),
+- verified JSONL schema by spot-checking first lines and ensuring topk_ids/topk_weights lengths match top_k,
+- confirmed plots reflect counts and normalized probabilities.
+- GPU device: 1 card H100-81Gig-HBM3
