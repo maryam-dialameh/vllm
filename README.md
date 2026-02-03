@@ -82,6 +82,17 @@ Then, run python plot_hist.py for the figures and some statististics.
 - Interpretation: the router spreads traffic almost evenly across experts, indicating strong load balancing (little expert collapse).
 - Timing: logging run A=3.97s vs no-log B=2.06s → overhead ≈ 1.91s in this setting.
 
+## Figures (example run)
+
+<p align="center">
+  <img src="docs/assets/expert_hist.png" alt="Expert selection histogram" width="49%"/>
+  <img src="docs/assets/expert_norm.png" alt="Normalized routing distribution" width="49%"/>
+</p>
+
+<p align="center">
+  <em>Left: raw expert selection histogram. Right: normalized routing distribution.</em>
+</p>
+
 6) AI usage log (how outputs were verified)
 
 Used ChatGPT to:
@@ -95,3 +106,18 @@ Verification steps:
 - verified JSONL schema by spot-checking first lines and ensuring topk_ids/topk_weights lengths match top_k,
 - confirmed plots reflect counts and normalized probabilities.
 - GPU device: 1 card H100-81Gig-HBM3
+
+## Citation
+
+If you use vLLM for your research, please cite our [paper](https://arxiv.org/abs/2309.06180):
+
+```bibtex
+@inproceedings{kwon2023efficient,
+  title={Efficient Memory Management for Large Language Model Serving with PagedAttention},
+  author={Woosuk Kwon and Zhuohan Li and Siyuan Zhuang and Ying Sheng and Lianmin Zheng and Cody Hao Yu and Joseph E. Gonzalez and Hao Zhang and Ion Stoica},
+  booktitle={Proceedings of the ACM SIGOPS 29th Symposium on Operating Systems Principles},
+  year={2023}
+}
+```
+
+
