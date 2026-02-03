@@ -93,7 +93,7 @@ Then, run python plot_hist.py for the figures and some statististics.
   <em>Left: raw expert selection histogram. Right: normalized routing distribution.</em>
 </p>
 
-6) AI usage log (how outputs were verified)
+## 6) AI usage log (how outputs were verified)
 
 Used ChatGPT to:
 
