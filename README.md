@@ -76,11 +76,12 @@ run: make the data by python make_prompt.py and then adjust your environment var
 Then, run python plot_hist.py for the figures and some statististics.
 
 ## 5) Results note:
-- Top-3 experts (by selection probability): expert 11 (2.598%), expert 54 (2.532%), expert 22 (2.393%).
+- Top-3 routed experts at layer=5 (by selection probability): expert 52 (2.52%), expert 32 (2.45%), expert 51 (2.18%).
 - Normalized distribution: routing is nearly uniform across 60 active experts (support=60).
-- Entropy metric: entropy = 5.8929 bits, normalized entropy = 0.9976 (≈ 1.0 is uniform over support).
+- Entropy metric: entropy = 5.8960 bits, normalized entropy = 0.9981 (≈ 1.0 is uniform over support).
 - Interpretation: the router spreads traffic almost evenly across experts, indicating strong load balancing (little expert collapse).
 - Timing: logging run A=3.97s vs no-log B=2.06s → overhead ≈ 1.91s in this setting.
+- Hint: please change your desired layer by changing target_layer_idx in main.py
 
 ## Figures (example run)
 

@@ -730,7 +730,7 @@ class FusedMoE(CustomOp):
         ## Extra code | new code
         self._topk_logger = None
         self.additional_config = vllm_config.additional_config
-        self.record_topk = bool(self.vllm_config.additional_config.get("record_topk", False))
+        # self.record_topk = bool(self.vllm_config.additional_config.get("record_topk", False))
         self.target_layer_idx = self.vllm_config.additional_config.get("target_layer_idx", 0)
         # self.saving_log_path = self.vllm_config.additional_config.get("saving_log_path", None)
 
